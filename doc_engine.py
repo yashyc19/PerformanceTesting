@@ -21,6 +21,7 @@ import re
 import time
 import openpyxl
 from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
@@ -68,11 +69,16 @@ def _write_file_task(
     start_number: int,
     record_count: int,
     output_path: str,
+    col_formats: list = None,
 ) -> dict:
     """Write a single Excel file with *record_count* rows and unique DocumentNo values.
 
     Uses openpyxl **write-only** mode so rows are streamed to disk —
     this keeps memory flat even for 200 000+ row files.
+
+    When *col_formats* is provided, each cell is written as a
+    ``WriteOnlyCell`` with the original number format from the
+    template, preserving date display, decimal precision, etc.
     """
     try:
         wb = Workbook(write_only=True)
@@ -82,6 +88,7 @@ def _write_file_task(
         ws.append(header)
 
         template_len = len(template_data)
+        has_formats = col_formats and any(f != 'General' for f in col_formats)
 
         # Write data rows — cycle through template, stamp unique DocumentNo
         for i in range(record_count):
@@ -89,7 +96,18 @@ def _write_file_task(
             row[doc_col_idx] = _format_doc_number(
                 doc_prefix, start_number + i, doc_min_width
             )
-            ws.append(row)
+
+            if has_formats:
+                # Wrap each value in a WriteOnlyCell to preserve number formats
+                cells = []
+                for col_idx, value in enumerate(row):
+                    cell = WriteOnlyCell(ws, value=value)
+                    if col_idx < len(col_formats) and col_formats[col_idx] != 'General':
+                        cell.number_format = col_formats[col_idx]
+                    cells.append(cell)
+                ws.append(cells)
+            else:
+                ws.append(row)
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         wb.save(output_path)
@@ -122,17 +140,22 @@ def _read_template(input_file: str, ref_column_name: str = "DocumentNo") -> tupl
         doc_prefix      – e.g. 'Gstr'
         doc_min_width   – minimum digit width to preserve
         last_doc_num    – last numeric value found (e.g. 105)
+        col_formats     – list of Excel number-format strings per column
     """
     wb = openpyxl.load_workbook(input_file, read_only=True, data_only=True)
     ws = wb.active  # Always the first / default sheet
 
-    rows = list(ws.iter_rows(values_only=True))
+    # Read rows WITH cell objects (not values_only) to capture number formats
+    all_rows = list(ws.iter_rows())
     wb.close()
 
-    if len(rows) < 2:
+    if len(all_rows) < 2:
         raise ValueError("Template file must have at least a header row and one data row")
 
-    header = list(rows[0])
+    header = [cell.value for cell in all_rows[0]]
+
+    # Capture number formats from the first data row
+    col_formats = [cell.number_format or 'General' for cell in all_rows[1]]
 
     # Locate the DocumentNo column (case-insensitive partial match)
     doc_col_idx = None
@@ -150,11 +173,12 @@ def _read_template(input_file: str, ref_column_name: str = "DocumentNo") -> tupl
     # Collect non-empty data rows and track last DocumentNo value
     template_data = []
     last_doc_value = None
-    for row in rows[1:]:
-        if any(cell is not None for cell in row):
-            template_data.append(list(row))
-            if row[doc_col_idx] is not None:
-                last_doc_value = row[doc_col_idx]
+    for row_cells in all_rows[1:]:
+        row_values = [cell.value for cell in row_cells]
+        if any(v is not None for v in row_values):
+            template_data.append(row_values)
+            if row_values[doc_col_idx] is not None:
+                last_doc_value = row_values[doc_col_idx]
 
     if not template_data:
         raise ValueError("Template file has no data rows")
@@ -163,7 +187,7 @@ def _read_template(input_file: str, ref_column_name: str = "DocumentNo") -> tupl
 
     doc_prefix, last_doc_num, doc_min_width = _extract_doc_number_parts(str(last_doc_value))
 
-    return header, template_data, doc_col_idx, doc_prefix, doc_min_width, last_doc_num
+    return header, template_data, doc_col_idx, doc_prefix, doc_min_width, last_doc_num, col_formats
 
 
 # ---------------------------------------------------------------------------
@@ -210,7 +234,7 @@ def run(
         progress_callback(0, 0, "Reading template file...")
 
     (header, template_data, doc_col_idx,
-     doc_prefix, doc_min_width, last_doc_num) = _read_template(input_file, ref_column_name)
+     doc_prefix, doc_min_width, last_doc_num, col_formats) = _read_template(input_file, ref_column_name)
 
     template_info = (
         f"Template: {len(template_data)} rows | "
@@ -244,6 +268,7 @@ def run(
                 "start_number": current_start,
                 "record_count": rec_count,
                 "output_path": output_path,
+                "col_formats": col_formats,
             })
             current_start += rec_count  # reserve the entire range for this task
 
