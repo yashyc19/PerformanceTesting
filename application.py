@@ -5,8 +5,7 @@ import os
 import zipfile
 import threading
 from icecream import ic
-# from performanceTest import runDocProcess
-# from logger import Logger
+import doc_engine
 
 customtkinter.set_appearance_mode("System")  # Modes: "System" (standard), "Dark", "Light")
 customtkinter.set_default_color_theme("blue")  # Themes: "blue" (standard), "green", "dark-blue")
@@ -24,11 +23,11 @@ class App(customtkinter.CTk):
         self.grid_columnconfigure(1, weight=1)
         self.grid_columnconfigure(2, weight=1)
         self.grid_columnconfigure(3, weight=2)
-        self.grid_rowconfigure((0, 1, 2, 3, 4, 5), weight=1)
+        self.grid_rowconfigure((0, 1, 2, 3, 4, 5, 6), weight=1)
 
         # create sidebar frame with widgets
         self.sidebar_frame = customtkinter.CTkFrame(self, width=140, corner_radius=0)
-        self.sidebar_frame.grid(row=0, column=0, rowspan=6, sticky="nsew")
+        self.sidebar_frame.grid(row=0, column=0, rowspan=7, sticky="nsew")
         self.sidebar_frame.grid_rowconfigure(4, weight=1)
         self.logo_label = customtkinter.CTkLabel(self.sidebar_frame, text="Performance Testing", font=customtkinter.CTkFont(size=20, weight="bold"))
         self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
@@ -57,34 +56,41 @@ class App(customtkinter.CTk):
 
         self.record_count_label = customtkinter.CTkLabel(self, text="Record Count:")
         self.record_count_label.grid(row=2, column=1, padx=(20, 0), pady=(10, 10), sticky="w")
-        self.record_count_entry = customtkinter.CTkEntry(self, validate="key", validatecommand=(self.register(self.validate_integer), '%P'))
+        self.record_count_entry = customtkinter.CTkEntry(self, placeholder_text="10, 50, 100, 1000", placeholder_text_color=("gray60","gray40"), validate="key", validatecommand=(self.register(self.validate_record_count), '%P'))
         self.record_count_entry.grid(row=2, column=2, padx=(20, 0), pady=(10, 10), sticky="ew")
+
+        # create reference column input
+        self.ref_column_label = customtkinter.CTkLabel(self, text="Reference Column:")
+        self.ref_column_label.grid(row=3, column=1, padx=(20, 0), pady=(10, 10), sticky="w")
+        self.ref_column_entry = customtkinter.CTkEntry(self, placeholder_text="DocumentNo")
+        self.ref_column_entry.grid(row=3, column=2, padx=(20, 0), pady=(10, 10), sticky="ew")
+        self.ref_column_entry.insert(0, "DocumentNo")
 
         # create folder select input
         self.folder_button = customtkinter.CTkButton(self, text="Select Destination Folder", command=self.select_folder)
-        self.folder_button.grid(row=3, column=1, padx=(20, 0), pady=(20, 10), sticky="ew")
+        self.folder_button.grid(row=4, column=1, padx=(20, 0), pady=(20, 10), sticky="ew")
         self.folder_label = customtkinter.CTkEntry(self, placeholder_text="No folder selected")
-        self.folder_label.grid(row=3, column=2, padx=(20, 0), pady=(20, 10), sticky="ew")
+        self.folder_label.grid(row=4, column=2, padx=(20, 0), pady=(20, 10), sticky="ew")
 
         # create process button
         self.process_button = customtkinter.CTkButton(self, text="Process", command=self.start_process_thread)
-        self.process_button.grid(row=4, column=1, padx=(20, 0), pady=(20, 10), sticky="ew")
+        self.process_button.grid(row=5, column=1, padx=(20, 0), pady=(20, 10), sticky="ew")
 
         # create create zip file button
         self.zip_button = customtkinter.CTkButton(self, text="Create Zip File", command=self.create_zip)
-        self.zip_button.grid(row=4, column=2, padx=(20, 0), pady=(20, 10), sticky="ew")
+        self.zip_button.grid(row=5, column=2, padx=(20, 0), pady=(20, 10), sticky="ew")
 
         # create clear button
         self.clear_button = customtkinter.CTkButton(self, text="Clear Logs", command=self.clear_logs)
-        self.clear_button.grid(row=5, column=1, padx=(20, 0), pady=(20, 10), sticky="ew")
+        self.clear_button.grid(row=6, column=1, padx=(20, 0), pady=(20, 10), sticky="ew")
 
         # create clear folder button
         self.clear_folder_button = customtkinter.CTkButton(self, text="Clear Folder", command=self.clear_folder)
-        self.clear_folder_button.grid(row=5, column=2, padx=(20, 0), pady=(20, 10), sticky="ew")
+        self.clear_folder_button.grid(row=6, column=2, padx=(20, 0), pady=(20, 10), sticky="ew")
 
         # create large text output area for messages
         self.text_output = customtkinter.CTkTextbox(self, width=250)
-        self.text_output.grid(row=0, column=3, rowspan=6, padx=(20, 20), pady=(20, 20), sticky="nsew")
+        self.text_output.grid(row=0, column=3, rowspan=7, padx=(20, 20), pady=(20, 20), sticky="nsew")
 
     def select_file(self):
         file_path = tkinter.filedialog.askopenfilename()
@@ -111,35 +117,78 @@ class App(customtkinter.CTk):
         else:
             return False
 
+    def validate_record_count(self, value_if_allowed):
+        """Allow digits, commas, and spaces for comma-separated record counts."""
+        if value_if_allowed == "":
+            return True
+        return all(c.isdigit() or c in (",", " ") for c in value_if_allowed)
+
     def start_process_thread(self):
         process_thread = threading.Thread(target=self.process)
         process_thread.start()
+
+    def _log(self, message: str):
+        """Append a message to the text output (thread-safe via self.after)."""
+        def _append():
+            self.text_output.insert("end", message + "\n")
+            self.text_output.see("end")
+        self.after(0, _append)
+
+    def _set_processing_state(self, is_processing: bool):
+        """Enable/disable the Process button from any thread."""
+        state = "disabled" if is_processing else "normal"
+        self.after(0, lambda: self.process_button.configure(state=state))
 
     def process(self):
         input_file = self.file_label.get()
         output_folder = self.folder_label.get()
         file_count = self.file_count_entry.get()
-        record_count = self.record_count_entry.get()
+        record_count_raw = self.record_count_entry.get().strip()
+        ref_column_name = self.ref_column_entry.get().strip()
 
-        if not input_file or not output_folder or not file_count or not record_count:
-            ic("Please fill in all fields before processing.")
+        if not input_file or not output_folder or not file_count or not record_count_raw or not ref_column_name:
+            self._log("⚠ Please fill in all fields before processing.")
             return
 
         try:
             file_count = int(file_count)
-            record_count = int(record_count)
         except ValueError:
-            ic("File Count and Record Count must be integers.")
+            self._log("⚠ File Count must be an integer.")
+            return
+
+        # Parse record_count: supports single int or comma-separated list
+        try:
+            if "," in record_count_raw:
+                record_counts = [int(x.strip()) for x in record_count_raw.split(",") if x.strip()]
+            else:
+                record_counts = [int(record_count_raw)]
+        except ValueError:
+            self._log("⚠ Record Count must be integers (e.g. 100 or 10, 50, 100, 1000).")
             return
 
         if not os.path.exists(input_file):
-            ic(f"File not found: {input_file}")
+            self._log(f"⚠ File not found: {input_file}")
             return
 
-        ic("Processing...")
-        # runDocProcess(input_file, output_folder, file_count, record_count)
-        ic("Processing complete.")
-        ic("===================================")
+        # Disable the button and run the engine
+        self._set_processing_state(True)
+        self._log("═══ Starting file generation ═══")
+
+        try:
+            summary = doc_engine.run(
+                input_file=input_file,
+                output_folder=output_folder,
+                file_count=file_count,
+                record_counts=record_counts,
+                ref_column_name=ref_column_name,
+                progress_callback=lambda done, total, msg: self._log(msg),
+            )
+            ic(summary)
+        except Exception as e:
+            self._log(f"✗ Engine error: {e}")
+            ic(f"Engine error: {e}")
+        finally:
+            self._set_processing_state(False)
 
     def create_zip(self):
         output_folder = self.folder_label.get()
